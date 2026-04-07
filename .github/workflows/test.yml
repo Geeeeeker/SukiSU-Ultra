@@ -69,19 +69,19 @@ jobs:
           make ARCH=arm64 LLVM=1 LLVM_IAS=1 defconfig O=out
           # 启用 KernelSU 和相关选项
           cat >> out/.config << 'EOF'
-CONFIG_KSU=y
-CONFIG_KPM=y
-CONFIG_KPROBES=y
-CONFIG_HAVE_KPROBES=y
-CONFIG_KPROBE_EVENTS=y
-CONFIG_DEBUG_KERNEL=y
-CONFIG_KALLSYMS=y
-CONFIG_KALLSYMS_ALL=y
-CONFIG_IKCONFIG=y
-CONFIG_IKCONFIG_PROC=y
-# CONFIG_TRACING is not set
-# CONFIG_FTRACE is not set
-EOF
+          CONFIG_KSU=y
+          CONFIG_KPM=y
+          CONFIG_KPROBES=y
+          CONFIG_HAVE_KPROBES=y
+          CONFIG_KPROBE_EVENTS=y
+          CONFIG_DEBUG_KERNEL=y
+          CONFIG_KALLSYMS=y
+          CONFIG_KALLSYMS_ALL=y
+          CONFIG_IKCONFIG=y
+          CONFIG_IKCONFIG_PROC=y
+          # CONFIG_TRACING is not set
+          # CONFIG_FTRACE is not set
+          EOF
           # 解决依赖（自动处理）
           make ARCH=arm64 LLVM=1 LLVM_IAS=1 olddefconfig O=out
 
