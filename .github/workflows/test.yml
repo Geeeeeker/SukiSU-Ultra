@@ -19,11 +19,15 @@ jobs:
       - name: Integrate SukiSU-Ultra (modified for 4.14)
         run: |
           git clone --depth=1 https://github.com/Geeeeeker/SukiSU-Ultra.git
-          cp -r SukiSU-Ultra/kernel drivers/kernelsu
+          # 确保 drivers 目录存在（内核源码根目录下通常有，但为保险）
+          mkdir -p drivers
+          # 创建 kernelsu 目录并复制内容
+          mkdir -p drivers/kernelsu
+          cp -r SukiSU-Ultra/kernel/* drivers/kernelsu/
           cp -r SukiSU-Ultra/uapi drivers/kernelsu/
+          # 修改顶层 Makefile 和 Kconfig
           echo "obj-\$(CONFIG_KSU) += kernelsu/" >> drivers/Makefile
           echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
-          
           # 创建符号链接（解决 kpm 头文件问题）
           mkdir -p drivers/kernelsu/kpm
           for dir in policy uapi include manager sulog supercall; do
@@ -175,3 +179,5 @@ jobs:
         with:
           name: kernelsu-4.14-test
           path: kernelsu-test.zip
+
+
