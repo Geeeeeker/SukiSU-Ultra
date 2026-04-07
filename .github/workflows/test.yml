@@ -1,0 +1,177 @@
+name: Test KernelSU for 4.14
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      KBUILD_BUILD_USER: NATO66613
+      KBUILD_BUILD_HOST: KREMLIN
+
+    steps:
+      - name: Checkout kernel source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Integrate SukiSU-Ultra (modified for 4.14)
+        run: |
+          git clone --depth=1 https://github.com/Geeeeeker/SukiSU-Ultra.git
+          cp -r SukiSU-Ultra/kernel drivers/kernelsu
+          cp -r SukiSU-Ultra/uapi drivers/kernelsu/
+          echo "obj-\$(CONFIG_KSU) += kernelsu/" >> drivers/Makefile
+          echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
+          
+          # 创建符号链接（解决 kpm 头文件问题）
+          mkdir -p drivers/kernelsu/kpm
+          for dir in policy uapi include manager sulog supercall; do
+            [ -d "drivers/kernelsu/$dir" ] && ln -sf "../$dir" "drivers/kernelsu/kpm/$dir"
+          done
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          create-symlink: true
+          key: kernel-build-cache
+          max-size: '5G'
+
+      - name: Restore toolchain cache
+        id: restore-clang
+        uses: actions/cache/restore@v4
+        with:
+          path: /home/runner/r547379
+          key: clang-r547379
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential ccache curl flex libelf-dev libncurses-dev libssl-dev unzip zip wget
+
+      - name: Deploy Clang
+        if: steps.restore-clang.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth=1 https://gitlab.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-r547379.git /home/runner/r547379
+
+      - name: Save clang
+        if: steps.restore-clang.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: /home/runner/r547379
+          key: clang-r547379
+
+      - name: Configure kernel (enable KSU and KPROBES)
+        run: |
+          DEFCONFIG="arch/arm64/configs/raphael_defconfig"
+          # 启用必要选项
+          echo "CONFIG_KSU=y" >> $DEFCONFIG
+          echo "CONFIG_KPM=y" >> $DEFCONFIG
+          echo "CONFIG_KPROBES=y" >> $DEFCONFIG
+          echo "CONFIG_HAVE_KPROBES=y" >> $DEFCONFIG
+          echo "CONFIG_KPROBE_EVENTS=y" >> $DEFCONFIG
+          echo "CONFIG_DEBUG_KERNEL=y" >> $DEFCONFIG
+          echo "CONFIG_KALLSYMS=y" >> $DEFCONFIG
+          echo "CONFIG_KALLSYMS_ALL=y" >> $DEFCONFIG
+          echo "CONFIG_IKCONFIG=y" >> $DEFCONFIG
+          echo "CONFIG_IKCONFIG_PROC=y" >> $DEFCONFIG
+          echo "# CONFIG_TRACING is not set" >> $DEFCONFIG
+          echo "# CONFIG_FTRACE is not set" >> $DEFCONFIG
+
+      - name: Patch KernelSU for 4.14 compatibility
+        run: |
+          # 1. 删除 MODULE_IMPORT_NS
+          find drivers/kernelsu -name "*.c" -exec sed -i '/MODULE_IMPORT_NS/d' {} \;
+          
+          # 2. 修复 syscall_fn_t 签名
+          sed -i 's/typedef void (\*syscall_fn_t)(void);/typedef long (*syscall_fn_t)(struct pt_regs *);/' drivers/kernelsu/hook/syscall_hook.h 2>/dev/null || true
+          grep -q "typedef long (*syscall_fn_t)(struct pt_regs \*);" drivers/kernelsu/hook/syscall_hook.h || \
+            sed -i '1i typedef long (*syscall_fn_t)(struct pt_regs *);' drivers/kernelsu/hook/syscall_hook.h
+          
+          # 3. access_ok 三参数
+          find drivers/kernelsu -name "*.c" -exec sed -i 's/access_ok(/access_ok(VERIFY_READ, /g' {} \;
+          
+          # 4. pgtable.h 替换
+          find drivers/kernelsu -name "*.c" -exec sed -i 's/#include <linux\/pgtable.h>/#include <asm\/pgtable.h>/g' {} \;
+          
+          # 5. 添加缺失头文件
+          find drivers/kernelsu -name "*.c" -exec grep -l "pgtable" {} \; | while read f; do
+            grep -q "#include <linux/mm.h>" "$f" || sed -i '1i #include <linux/mm.h>' "$f"
+          done
+          find drivers/kernelsu -name "*.c" -exec grep -l -E "VERIFY_READ|strncpy_from_user" {} \; | while read f; do
+            grep -q "#include <linux/uaccess.h>" "$f" || sed -i '1i #include <linux/uaccess.h>' "$f"
+          done
+          
+          # 6. 修复 sucompat.c 的 const 限定符
+          sed -i 's/ksu_syscall_table\[orig_nr\](regs)/ksu_syscall_table[orig_nr]((struct pt_regs *)regs)/g' drivers/kernelsu/feature/sucompat.c
+          
+          # 7. 注释 __NR_clone3
+          sed -i 's#ksu_register_syscall_hook(__NR_clone3, ksu_hook_clone);#// ksu_register_syscall_hook(__NR_clone3, ksu_hook_clone);#g' drivers/kernelsu/hook/syscall_hook_manager.c
+          sed -i 's#ksu_unregister_syscall_hook(__NR_clone3);#// ksu_unregister_syscall_hook(__NR_clone3);#g' drivers/kernelsu/hook/syscall_hook_manager.c
+          
+          # 8. 修复 patch_memory.c
+          PATCH_MEM="drivers/kernelsu/hook/arm64/patch_memory.c"
+          if [ -f "$PATCH_MEM" ]; then
+            sed -i 's/__pte_to_phys(\*pte)/(pte_pfn(*pte) << PAGE_SHIFT)/g' "$PATCH_MEM"
+            sed -i 's/ret = (int)copy_to_kernel_nofault(map, src, len);/ret = probe_kernel_write(map, src, len); if (ret) ret = -EFAULT;/g' "$PATCH_MEM"
+            sed -i 's/__flush_icache_range/flush_icache_range/g' "$PATCH_MEM"
+            sed -i 's/#define ksu_flush_icache(start, end) __flush_icache_range/#define ksu_flush_icache(start, end) flush_icache_range/g' "$PATCH_MEM"
+          fi
+          
+          # 9. 修复 event_queue 中的 __poll_t
+          for f in drivers/kernelsu/infra/event_queue.h drivers/kernelsu/infra/event_queue.c; do
+            [ -f "$f" ] && sed -i 's/__poll_t/unsigned int/g' "$f"
+            [ -f "$f" ] && grep -q "#include <linux/poll.h>" "$f" || sed -i '1i #include <linux/poll.h>' "$f"
+          done
+
+      - name: Replace Kbuild (only compatible files for 4.14)
+        run: |
+          # 清空不兼容的源文件（避免编译）
+          for f in infra/file_wrapper.c infra/seccomp_cache.c infra/su_mount_ns.c \
+                    manager/pkg_observer.c manager/throne_tracker.c manager/apk_sign.c \
+                    policy/allowlist.c policy/app_profile.c policy/feature.c \
+                    runtime/boot_event.c runtime/ksud_integration.c; do
+            [ -f "drivers/kernelsu/$f" ] && : > "drivers/kernelsu/$f"
+          done
+
+      - name: Build kernel
+        run: |
+          export CLANG_PATH=$HOME/r547379/bin
+          export PATH=${CLANG_PATH}:${PATH}
+          make LLVM=1 LLVM_IAS=1 CC="ccache clang" raphael_defconfig O=out
+          make LLVM=1 LLVM_IAS=1 CC="ccache clang" -j$(nproc) O=out
+          ccache --show-stats
+
+      - name: Package AnyKernel3
+        run: |
+          git clone --depth=1 https://github.com/SOVIET-ANDROID/AnyKernel3.git $HOME/AnyKernel3
+          cp out/arch/arm64/boot/Image.gz-dtb $HOME/AnyKernel3/
+          cp out/arch/arm64/boot/dtbo.img $HOME/AnyKernel3/
+          # 下载管理器 APK（可选）
+          curl -L -o $HOME/AnyKernel3/SukiSU-Manager.apk https://github.com/Geeeeeker/SukiSU-Ultra/releases/latest/download/SukiSU-Manager.apk || echo "APK download skipped"
+          cat > $HOME/AnyKernel3/anykernel.sh << 'EOF'
+          #!/sbin/sh
+          kernel.string=KernelSU (4.14 Test)
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          device.name1=raphael
+          
+          ui_print " - Flashing kernel"
+          block=/dev/block/by-name/boot
+          is_slot_device=1
+          ramdisk_compression=auto
+          . /tmp/anykernel/tools/ak2-core.sh
+          ui_print " - Done"
+          EOF
+          chmod +x $HOME/AnyKernel3/anykernel.sh
+          cd $HOME/AnyKernel3
+          zip -r9 $GITHUB_WORKSPACE/kernelsu-test.zip . -x "*.git*"
+          cd $GITHUB_WORKSPACE
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernelsu-4.14-test
+          path: kernelsu-test.zip
