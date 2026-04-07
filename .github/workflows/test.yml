@@ -155,21 +155,21 @@ jobs:
           cp out/arch/arm64/boot/dtbo.img $HOME/AnyKernel3/ 2>/dev/null || echo "dtbo not found"
           curl -L -o $HOME/AnyKernel3/SukiSU-Manager.apk https://github.com/Geeeeeker/SukiSU-Ultra/releases/latest/download/SukiSU-Manager.apk || echo "APK download skipped"
           cat > $HOME/AnyKernel3/anykernel.sh << 'EOF'
-#!/sbin/sh
-kernel.string=KernelSU (4.14 Test)
-do.devicecheck=1
-do.modules=0
-do.systemless=1
-do.cleanup=1
-device.name1=raphael
-
-ui_print " - Flashing kernel"
-block=/dev/block/by-name/boot
-is_slot_device=1
-ramdisk_compression=auto
-. /tmp/anykernel/tools/ak2-core.sh
-ui_print " - Done"
-EOF
+          #!/sbin/sh
+          kernel.string=KernelSU (4.14 Test)
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          device.name1=raphael
+          
+          ui_print " - Flashing kernel"
+          block=/dev/block/by-name/boot
+          is_slot_device=1
+          ramdisk_compression=auto
+          . /tmp/anykernel/tools/ak2-core.sh
+          ui_print " - Done"
+          EOF
           chmod +x $HOME/AnyKernel3/anykernel.sh
           cd $HOME/AnyKernel3
           zip -r9 $GITHUB_WORKSPACE/kernelsu-test.zip . -x "*.git*"
